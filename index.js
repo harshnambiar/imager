@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { createWorker } from "tesseract.js";
+import { createCanvas, loadImage } from "canvas";
 import fs from "fs/promises";
+import { writeFileSync } from "fs";
 import path from "path";
 import "dotenv/config";
 
@@ -9,6 +11,99 @@ const key = process.env.VITE_API_KEY;
 const ai = new GoogleGenAI({
   apiKey: key, // or hardcode temporarily for testing
 });
+
+// ------------------ Regex patterns for DPDP sensitive data ------------------
+const PATTERNS = [
+  // Email
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gi,
+
+  // Indian Mobile
+  /(?:\+91[\s-]*)?[6-9]\d{9}/g,
+
+  // GSTIN (more flexible)
+  /\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/gi,
+  /\b\d{2}[A-Z0-9]{13}\b/gi, // fallback for OCR errors
+
+  // PAN
+  /\b[A-Z]{5}\d{4}[A-Z]\b/gi,
+
+  // IFSC
+  /\b[A-Z]{4}0[A-Z0-9]{6}\b/gi,
+
+  // Account numbers
+  /\b\d{9,18}\b/g,
+];
+
+
+
+function containsSensitiveData(text) {
+  if (!text) return false;
+  return PATTERNS.some((regex) => {
+    regex.lastIndex = 0;
+    return regex.test(text);
+  });
+}
+
+async function redactInvoice(inputPath, outputPath = null) {
+  if (!outputPath) {
+    const ext = path.extname(inputPath);
+    outputPath = inputPath.replace(ext, `_redacted${ext}`);
+  }
+
+  console.log("Loading image...");
+  const image = await loadImage(inputPath);
+  const canvas = createCanvas(image.width, image.height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+
+  console.log("Running OCR...");
+  const worker = await createWorker("eng");
+
+  const { data } = await worker.recognize(inputPath, {}, { blocks: true });
+  await worker.terminate();
+
+  // Get all lines
+  const lines =
+    data.blocks
+      ?.flatMap((block) => block.paragraphs || [])
+      ?.flatMap((paragraph) => paragraph.lines || []) || [];
+
+  console.log(`Found ${lines.length} lines`);
+
+  let redactedCount = 0;
+
+  for (const line of lines) {
+    const lineText = line.text?.trim() || "";
+
+    // Check if the full line contains sensitive data
+    if (containsSensitiveData(lineText)) {
+      const { x0, y0, x1, y1 } = line.bbox;
+
+      // Add padding and black out the entire line
+      const paddingX = 6;
+      const paddingY = 3;
+
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(
+        x0 - paddingX,
+        y0 - paddingY,
+        x1 - x0 + paddingX * 2,
+        y1 - y0 + paddingY * 2
+      );
+
+      redactedCount++;
+      console.log(`Redacted line: ${lineText.substring(0, 80)}...`);
+    }
+  }
+
+  // Save
+  const buffer = canvas.toBuffer("image/png");
+  writeFileSync(outputPath, buffer);
+
+  console.log(`\nDone! Redacted ${redactedCount} lines.`);
+  console.log(`Saved → ${outputPath}`);
+  return outputPath;
+}
 
 /**
  * Extract text from a JPG or PNG file using Gemini
@@ -87,12 +182,23 @@ async function extractTextWithTesseract(filePath) {
 })();
 */
 
-(async () => {
+/*(async () => {
   try {
     console.log("Running Tesseract.js...");
     const text = await extractTextWithTesseract("./samples/s1.png"); 
     console.log("\n===== Extracted Text =====\n");
     console.log(text);
+  } catch (err) {
+    console.error("Error:", err.message);
+  }
+})();
+*/
+
+// ------------------ Redaction Example ------------------
+(async () => {
+  try {
+    const inputFile = "./samples/s4.png";
+    await redactInvoice(inputFile);
   } catch (err) {
     console.error("Error:", err.message);
   }
