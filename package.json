@@ -19,6 +19,7 @@
         "js-chacha20": "^1.1.0",
         "leaflet": "^1.9.3",
         "path-browserify": "^1.0.1",
+        "pdfjs-dist": "^6.3.289",
         "stream-browserify": "^3.0.0",
         "tesseract.js": "^7.0.0",
         "vue-recaptcha": "^2.0.3",

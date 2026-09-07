@@ -2,9 +2,12 @@ import { GoogleGenAI } from "@google/genai";
 import { createWorker } from "tesseract.js";
 import { createCanvas, loadImage } from "canvas";
 import fs from "fs/promises";
-import { writeFileSync } from "fs";
+import { writeFileSync, readFileSync } from "fs";
 import path from "path";
 import "dotenv/config";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+
+pdfjs.GlobalWorkerOptions.workerSrc = "pdfjs-dist/legacy/build/pdf.worker.mjs";
 
 const key = process.env.VITE_API_KEY;
 
@@ -171,6 +174,71 @@ async function extractTextWithTesseract(filePath) {
   }
 }
 
+async function extractTextGeneric(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+
+  if (![".jpg", ".jpeg", ".png", ".pdf"].includes(ext)) {
+    throw new Error("Only JPG, PNG and PDF files are supported");
+  }
+
+  // ========== IMAGE ==========
+  if (ext !== ".pdf") {
+    const worker = await createWorker("eng");
+    try {
+      const { data: { text } } = await worker.recognize(filePath);
+      return text.trim();
+    } finally {
+      await worker.terminate();
+    }
+  }
+
+  // ========== PDF ==========
+  const data = new Uint8Array(readFileSync(filePath));
+  const pdf = await pdfjs.getDocument({ data }).promise;
+
+  let fullText = "";
+  const ocrWorker = await createWorker("eng");
+
+  try {
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+
+      // 1. Try to extract real text layer
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item) => item.str)
+        .join(" ")
+        .trim();
+
+      // Heuristic: if there's decent amount of text, treat as digital PDF
+      if (pageText.length > 30) {
+        fullText += `\n\n--- Page ${pageNum} (Text Layer) ---\n${pageText}`;
+        continue;
+      }
+
+      // 2. Very little text → treat as scanned page → use Tesseract
+      console.log(`Page ${pageNum} looks scanned. Running OCR...`);
+
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = createCanvas(viewport.width, viewport.height);
+      const context = canvas.getContext("2d");
+
+      await page.render({
+        canvasContext: context,
+        viewport,
+      }).promise;
+
+      const { data: { text } } = await ocrWorker.recognize(canvas);
+      fullText += `\n\n--- Page ${pageNum} (OCR) ---\n${text}`;
+    }
+  } finally {
+    await ocrWorker.terminate();
+  }
+
+  return fullText.trim();
+}
+
+
 /*
 (async () => {
   try {
@@ -195,10 +263,23 @@ async function extractTextWithTesseract(filePath) {
 */
 
 // ------------------ Redaction Example ------------------
-(async () => {
+/*(async () => {
   try {
     const inputFile = "./samples/s4.png";
     await redactInvoice(inputFile);
+  } catch (err) {
+    console.error("Error:", err.message);
+  }
+})();
+*/
+
+
+(async () => {
+  try {
+    const inputFile = "./samples/s4.png";
+    const text = await extractTextGeneric(inputFile);
+    console.log("\n======== Extracted Text: ========\n");
+    console.log(text);
   } catch (err) {
     console.error("Error:", err.message);
   }
