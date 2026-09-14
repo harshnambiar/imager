@@ -37,6 +37,85 @@ const PATTERNS = [
   /\b\d{9,18}\b/g,
 ];
 
+const PATTERNS_PDF = {
+  email: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gi,
+  mobile: /(?:\+91[\s-]*)?[6-9]\d{9}/g,
+  gstin: [
+    /\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/gi,
+    /\b\d{2}[A-Z0-9]{13}\b/gi, // fallback for OCR errors
+  ],
+  pan: /\b[A-Z]{5}\d{4}[A-Z]\b/gi,
+  ifsc: /\b[A-Z]{4}0[A-Z0-9]{6}\b/gi,
+  account: /\b\d{9,18}\b/g,
+};
+
+
+function redactSensitiveDataPdf(text) {
+  if (!text || typeof text !== "string") {
+    return {
+      email: [],
+      mobile: [],
+      gstin: [],
+      pan: [],
+      ifsc: [],
+      account: [],
+      body: "",
+    };
+  }
+
+  const found = {
+    email: new Set(),
+    mobile: new Set(),
+    gstin: new Set(),
+    pan: new Set(),
+    ifsc: new Set(),
+    account: new Set(),
+  };
+
+  // Collect all matches (use Sets to keep them unique)
+  for (const [type, pattern] of Object.entries(PATTERNS_PDF)) {
+    const patterns = Array.isArray(pattern) ? pattern : [pattern];
+
+    for (const regex of patterns) {
+      // Reset lastIndex just in case
+      regex.lastIndex = 0;
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        found[type].add(match[0].trim());
+      }
+    }
+  }
+
+  // Build the redacted body
+  let body = text;
+
+  // Longer matches first to avoid partial overwrites
+  const allSensitive = [
+    ...found.email,
+    ...found.mobile,
+    ...found.gstin,
+    ...found.pan,
+    ...found.ifsc,
+    ...found.account,
+  ].sort((a, b) => b.length - a.length);
+
+  for (const value of allSensitive) {
+    // Escape special regex characters in the value
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped, "gi");
+    body = body.replace(re, "[REDACTED]");
+  }
+
+  return {
+    email: [...found.email],
+    mobile: [...found.mobile],
+    gstin: [...found.gstin],
+    pan: [...found.pan],
+    ifsc: [...found.ifsc],
+    account: [...found.account],
+    body: body.trim(),
+  };
+}
 
 
 function containsSensitiveData(text) {
@@ -235,7 +314,7 @@ async function extractTextGeneric(filePath) {
     await ocrWorker.terminate();
   }
 
-  return fullText.trim();
+  return redactSensitiveDataPdf(fullText.trim());
 }
 
 
@@ -276,7 +355,7 @@ async function extractTextGeneric(filePath) {
 
 (async () => {
   try {
-    const inputFile = "./samples/s4.png";
+    const inputFile = "./samples/i1.pdf";
     const text = await extractTextGeneric(inputFile);
     console.log("\n======== Extracted Text: ========\n");
     console.log(text);
