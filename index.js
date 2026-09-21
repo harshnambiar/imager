@@ -284,10 +284,7 @@ async function extractTextGeneric(filePath) {
 
       // 1. Try to extract real text layer
       const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item) => item.str)
-        .join(" ")
-        .trim();
+      const pageText = reconstructLines(textContent);
 
       // Heuristic: if there's decent amount of text, treat as digital PDF
       if (pageText.length > 30) {
@@ -316,6 +313,60 @@ async function extractTextGeneric(filePath) {
 
   return redactSensitiveDataPdf(fullText.trim());
 }
+
+function reconstructLines(textContent) {
+  if (!textContent?.items?.length) return "";
+
+  // Sort items by Y position (top to bottom), then X (left to right)
+  const items = textContent.items
+    .filter(item => item.str.trim())
+    .map(item => ({
+      text: item.str,
+      x: item.transform[4],
+      y: item.transform[5],
+      height: item.height || 10,
+    }))
+    .sort((a, b) => {
+      // Group by approximate Y (same line)
+      const yDiff = Math.abs(a.y - b.y);
+      if (yDiff < Math.max(a.height, b.height) * 0.5) {
+        return a.x - b.x; // same line → sort by X
+      }
+      return b.y - a.y; // different line → higher Y first
+    });
+
+  const lines = [];
+  let currentLine = [];
+  let currentY = null;
+
+  for (const item of items) {
+    if (currentY === null) {
+      currentY = item.y;
+      currentLine.push(item.text);
+      continue;
+    }
+
+    const yDiff = Math.abs(item.y - currentY);
+
+    // If Y difference is small → same line
+    if (yDiff < item.height * 0.6) {
+      currentLine.push(item.text);
+    } else {
+      // New line
+      lines.push(currentLine.join(" ").trim());
+      currentLine = [item.text];
+      currentY = item.y;
+    }
+  }
+
+  if (currentLine.length) {
+    lines.push(currentLine.join(" ").trim());
+  }
+
+  return lines.filter(Boolean).join("\n");
+}
+
+
 
 
 /*
